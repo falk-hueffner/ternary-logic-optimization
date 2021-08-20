@@ -19,15 +19,9 @@ ops = [
     Op("and", lambda a, b: a & b, lambda a, b: f'{a} & {b}'),
     # Op("andnot", lambda a, b: a & ~b, lambda a, b: f'{a} & ~{b}'),
     Op("or", lambda a, b: a | b, lambda a, b: f'{a} | {b}'),
-    # Op("ornot", lambda a, b: a & ~b, lambda a, b: f'{a} | ~{b}'),
+    # Op("ornot", lambda a, b: a | ~b, lambda a, b: f'{a} | ~{b}'),
     Op("xor", lambda a, b: a ^ b, lambda a, b: f'{a} ^ {b}'),
 ]
-
-@dataclass
-class Insn:
-    opcode: int
-    r1: int
-    r2: int
 
 class SymbolicInsn:
     def __init__(self, prefix):
@@ -41,6 +35,7 @@ def eval(insns: [z3.ExprRef]) -> (z3.ExprRef, z3.ExprRef):
     C = z3.BitVecVal(0b10101010, 8)
     regs = [A, B, C]
     cycles = [z3.IntVal(0), z3.IntVal(0), z3.IntVal(0)]
+    constraints = []
 
     for i in range(len(insns)):
         in1 = regs[0]
@@ -65,14 +60,19 @@ def eval(insns: [z3.ExprRef]) -> (z3.ExprRef, z3.ExprRef):
 
         c = z3.If(cin1 > cin2, cin1, cin2) + 1
         cycles.append(c)
+        # keep instructions sorted by cycle
+        constraints.append(cycles[-1] >= cycles[-2])
+        # limit number of instructions issued in parallel
+        constraints.append(cycles[-1] >  cycles[-3])
 
-    return regs[-1], cycles
+    return regs[-1], cycles, constraints
 
 def solve(code, num_insns, max_cycles=None):
     insns = [SymbolicInsn(f'i{i}') for i in range(num_insns)]
 
     solver = z3.Solver()
-    result, cycles = eval(insns)
+    result, cycles, constraints = eval(insns)
+    solver.add(constraints)
     solver.add(result == code)
     if max_cycles is not None:
         solver.add(cycles[-1] <= max_cycles)
