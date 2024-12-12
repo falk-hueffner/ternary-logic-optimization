@@ -3,6 +3,7 @@
 import sys
 from dataclasses import dataclass
 from typing import Callable
+import itertools
 
 import z3
 
@@ -21,18 +22,10 @@ ops = [
     Op("xor",    lambda a, b: a ^ b,                       lambda a, b: f'{a} ^ {b}'),
     # ARM has these, as do many other architectures (Alpha, PowerPC, RISC-V (Zbb)).
     # x86 has only andnot, and that only with the BMI1 extension.
-    #Op("andnot", lambda a, b: a & ~b,                      lambda a, b: f'{a} & ~{b}'),
-    #Op("ornot",  lambda a, b: a | ~b,                      lambda a, b: f'{a} | ~{b}'),
-    #Op("xornot", lambda a, b: a ^ ~b,                      lambda a, b: f'{a} ^ ~{b}'),
+    Op("andnot", lambda a, b: a & ~b,                      lambda a, b: f'{a} & ~{b}'),
+    Op("ornot",  lambda a, b: a | ~b,                      lambda a, b: f'{a} | ~{b}'),
+    Op("xornot", lambda a, b: a ^ ~b,                      lambda a, b: f'{a} ^ ~{b}'),
 ]
-
-# Should we try to use an additional instruction to decrease the number of cycles by issuing in parallel?
-# E.g. for not/and/or/xor, changes 0x89, 0xa1, and 0xc1 from 4 insns, 4 cycles to 5 insns, 3 cycles.
-MULTI_ISSUE = False
-# Maximum number of instructions that can be issued at once.
-# Only relevant with MULTI_ISSUE = True.
-ISSUE_WIDTH = 2
-
 
 class SymbolicInsn:
     def __init__(self, prefix):
@@ -45,7 +38,7 @@ def eval(insns: [z3.ExprRef]) -> (z3.ExprRef, z3.ExprRef):
     B = z3.BitVecVal(0b11001100, 8)
     C = z3.BitVecVal(0b10101010, 8)
     regs = [A, B, C]
-    cycles = [z3.IntVal(0), z3.IntVal(0), z3.IntVal(0)]
+    cycles = [z3.IntVal(0), z3.IntVal(0), z3.IntVal(0)] + [z3.Int(f'cycle_{i}') for i in range(len(insns))]
     constraints = []
 
     for i in range(len(insns)):
@@ -69,10 +62,13 @@ def eval(insns: [z3.ExprRef]) -> (z3.ExprRef, z3.ExprRef):
 
         regs.append(result)
 
-        c = z3.If(cin1 > cin2, cin1, cin2) + 1
-        cycles.append(c)
+        constraints.append(cycles[3 + i] > cin1)
+        constraints.append(cycles[3 + i] > cin2)
+        # keep instructions sorted by cycle
+        constraints.append(cycles[3 + i] >= cycles[3 + i - 1])
         # limit number of instructions issued in parallel
-        constraints.append(cycles[-1] > cycles[-1 - (ISSUE_WIDTH if MULTI_ISSUE else 1)])
+        # doesn't seem to be necessary
+        #constraints.append(cycles[3 + i] >  cycles[3 + i - 2])
 
     return regs[-1], cycles, constraints
 
@@ -114,32 +110,27 @@ def solve(code, num_insns, max_cycles=None):
         result += f't{i} = {ops[opcode].show(r1, r2)};\t// {c}\n'
     return result, total_cycles
 
+def solve_code(code):
+    for num_insns in itertools.count(1):
+        for max_cycles in range(1, num_insns + 1):
+            result = solve(code=code, num_insns=num_insns, max_cycles=max_cycles)
+            if result:
+                text, total_cycles = result
+                print(text)
+                print()
+                # Try to find an alternative solution that has one more instruction but one less cycle.
+                # E.g. for not/and/or/xor, changes 0x89, 0xa1, and 0xc1 from 4 insns, 4 cycles to 5 insns, 3 cycles.
+                result = solve(code=code, num_insns=num_insns + 1, max_cycles=max_cycles - 1)
+                if result:
+                    print('// alternative solution')
+                    text, total_cycles = result
+                    print(text)
+                    print()
+                return
 
 def main():
     for code in range(256):
-        num_insns = 1
-        while True:
-            result = solve(code=code, num_insns=num_insns)
-            if result:
-                text, total_cycles = result
-                max_cycles = total_cycles - 1
-                while True:
-                    result = solve(code=code, num_insns=num_insns, max_cycles=max_cycles)
-                    if not result:
-                        break
-                    text, total_cycles = result
-                    max_cycles = total_cycles - 1
-
-                if MULTI_ISSUE:
-                    result = solve(code=code, num_insns=num_insns+1, max_cycles=max_cycles)
-                    if result:
-                        text, total_cycles = result
-
-                print(text)
-                print()
-
-                break
-            num_insns += 1
+        solve_code(code)
 
 main()
 
