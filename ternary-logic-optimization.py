@@ -13,15 +13,26 @@ class Op:
     show: Callable[[str, str], str]
 
 ops = [
-    Op("set0", lambda a, b: z3.BitVecVal(0b00000000, 8), lambda a, b: '0'),
-    Op("set1", lambda a, b: z3.BitVecVal(0b11111111, 8), lambda a, b: '-1'),
-    Op("not", lambda a, b: ~a, lambda a, b: f'~{a}'),
-    Op("and", lambda a, b: a & b, lambda a, b: f'{a} & {b}'),
-    # Op("andnot", lambda a, b: a & ~b, lambda a, b: f'{a} & ~{b}'),
-    Op("or", lambda a, b: a | b, lambda a, b: f'{a} | {b}'),
-    # Op("ornot", lambda a, b: a | ~b, lambda a, b: f'{a} | ~{b}'),
-    Op("xor", lambda a, b: a ^ b, lambda a, b: f'{a} ^ {b}'),
+    Op("set0",   lambda a, b: z3.BitVecVal(0b00000000, 8), lambda a, b: '0'),
+    Op("set1",   lambda a, b: z3.BitVecVal(0b11111111, 8), lambda a, b: '-1'),
+    Op("not",    lambda a, b: ~a,                          lambda a, b: f'~{a}'),
+    Op("and",    lambda a, b: a & b,                       lambda a, b: f'{a} & {b}'),
+    Op("or",     lambda a, b: a | b,                       lambda a, b: f'{a} | {b}'),
+    Op("xor",    lambda a, b: a ^ b,                       lambda a, b: f'{a} ^ {b}'),
+    # ARM has these, as do many other architectures (Alpha, PowerPC, RISC-V (Zbb)).
+    # x86 has only andnot, and that only with the BMI1 extension.
+    #Op("andnot", lambda a, b: a & ~b,                      lambda a, b: f'{a} & ~{b}'),
+    #Op("ornot",  lambda a, b: a | ~b,                      lambda a, b: f'{a} | ~{b}'),
+    #Op("xornot", lambda a, b: a ^ ~b,                      lambda a, b: f'{a} ^ ~{b}'),
 ]
+
+# Should we try to use an additional instruction to decrease the number of cycles by issuing in parallel?
+# E.g. for not/and/or/xor, changes 0x89, 0xa1, and 0xc1 from 4 insns, 4 cycles to 5 insns, 3 cycles.
+MULTI_ISSUE = False
+# Maximum number of instructions that can be issued at once.
+# Only relevant with MULTI_ISSUE = True.
+ISSUE_WIDTH = 2
+
 
 class SymbolicInsn:
     def __init__(self, prefix):
@@ -60,10 +71,8 @@ def eval(insns: [z3.ExprRef]) -> (z3.ExprRef, z3.ExprRef):
 
         c = z3.If(cin1 > cin2, cin1, cin2) + 1
         cycles.append(c)
-        # keep instructions sorted by cycle
-        constraints.append(cycles[-1] >= cycles[-2])
         # limit number of instructions issued in parallel
-        constraints.append(cycles[-1] >  cycles[-3])
+        constraints.append(cycles[-1] > cycles[-1 - (ISSUE_WIDTH if MULTI_ISSUE else 1)])
 
     return regs[-1], cycles, constraints
 
@@ -102,13 +111,9 @@ def solve(code, num_insns, max_cycles=None):
         else:
             r2 = f't{r2 - 3}'
         c = model.eval(cycles[3 + i]).as_long()
-        result += f't{i} = {ops[opcode].show(r1, r2)}; // {c}\n'
+        result += f't{i} = {ops[opcode].show(r1, r2)};\t// {c}\n'
     return result, total_cycles
 
-# Should we try to use an additional instruction to decrease the number of cycles by issuing in parallel?
-# E.g. for not/and/or/xor, changes 0x89, 0xa1, and 0xc1 from 4 insns, 4 cycles to 5 insns, 3 cycles.
-# Assumes arbitrarily many instructions can be issued in parallel.
-multi_issue = True
 
 def main():
     for code in range(256):
@@ -125,7 +130,7 @@ def main():
                     text, total_cycles = result
                     max_cycles = total_cycles - 1
 
-                if multi_issue:
+                if MULTI_ISSUE:
                     result = solve(code=code, num_insns=num_insns+1, max_cycles=max_cycles)
                     if result:
                         text, total_cycles = result
